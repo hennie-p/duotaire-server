@@ -175,11 +175,14 @@ export class DuoTaireRoom extends Room<DuoTaireState> {
       console.log(`✅ Game started! Player 0 deck: ${player0.deck.length}, Player 1 deck: ${player1.deck.length}`);
       console.log(`📦 Center piles: ${this.state.centerPiles.map(p => p.cards.length).join(', ')}`);
       
-      // Broadcast game_started with full state (JSON format for Godot client)
-      const gameState = this.getFullStateJSON();
-      console.log("📤 Broadcasting game_started...");
-      this.broadcast("game_started", gameState);
-      console.log("✅ game_started broadcast sent");
+      // Small delay to ensure both clients are ready
+      this.clock.setTimeout(() => {
+        // Broadcast game_started with full state (JSON format for Godot client)
+        const gameState = this.getFullStateJSON();
+        console.log("📤 Broadcasting game_started...");
+        this.broadcast("game_started", gameState);
+        console.log("✅ game_started broadcast sent");
+      }, 500); // 500ms delay
       
     } catch (error) {
       console.error("❌ Error in startGame:", error);

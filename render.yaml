@@ -1,10 +1,8 @@
 services:
   - type: web
-    name: duotaire-simple
+    name: duotaire-relay-v2
     runtime: node
+    plan: free
     buildCommand: npm install
-    startCommand: node server.js
-    envVars:
-      - key: NODE_ENV
-        value: production
+    startCommand: npm start
     healthCheckPath: /health

@@ -1,19 +1,17 @@
 {
-  "name": "duotaire-simple-server",
-  "version": "1.0.0",
-  "description": "Simple WebSocket server for Duo-taire card game",
+  "name": "duotaire-relay-v2",
+  "version": "2.0.0",
+  "description": "Simple WebSocket relay server for Duo-taire multiplayer",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server.js"
   },
-  "keywords": ["websocket", "game", "multiplayer", "card-game"],
-  "author": "HBC Consulting",
-  "license": "MIT",
   "dependencies": {
     "ws": "^8.14.2"
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "author": "HBC Consulting",
+  "license": "UNLICENSED"
 }

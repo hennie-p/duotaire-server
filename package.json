@@ -1,7 +1,6 @@
 {
-  "name": "duotaire-relay-v2",
-  "version": "2.0.0",
-  "description": "Simple WebSocket relay server for Duo-taire multiplayer",
+  "name": "duotaire-relay",
+  "version": "1.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,7 +10,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "author": "HBC Consulting",
-  "license": "UNLICENSED"
+  }
 }

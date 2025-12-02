@@ -47,7 +47,9 @@ const gameServer = new Server({
     server,
     pingInterval: 5000,
     pingMaxRetries: 3
-  })
+  }),
+  // Increase seat reservation timeout (default is 8 seconds)
+  seatReservationTime: 60  // 60 seconds
 });
 
 // Register game rooms

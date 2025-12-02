@@ -2,7 +2,7 @@
  * Duo-taire Simple WebSocket Game Server
  * © 2025 HBC Consulting. All rights reserved.
  * 
- * Pure JSON WebSocket server - no complex protocols
+ * Pure JSON WebSocket server - matches existing NetworkManager.gd interface
  */
 
 const WebSocket = require('ws');
@@ -17,7 +17,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ 
       status: 'ok', 
       server: 'Duo-taire Simple Server',
-      rooms: Object.keys(rooms).length,
+      rooms: Object.keys(lobbies).length,
       timestamp: new Date().toISOString()
     }));
   } else {
@@ -30,146 +30,32 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 
 // Game state storage
-const rooms = {};  // roomCode -> Room
-const clients = {}; // odId -> { ws, odId, roomCode, playerIndex, name }
+const lobbies = {};  // code -> { host: ws, guest: ws, code: string }
+const clientToLobby = new WeakMap(); // ws -> lobbyCode
 
-// Generate random room code
-function generateRoomCode() {
+// Generate random lobby code (6 characters, easy to read)
+function generateLobbyCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 6; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
+  // Ensure unique
+  if (lobbies[code]) {
+    return generateLobbyCode();
+  }
   return code;
 }
 
-// Generate unique client ID
-function generateClientId() {
-  return 'p_' + Math.random().toString(36).substr(2, 9);
-}
-
-// Create a shuffled deck
-function createShuffledDeck() {
-  const suits = ['♠', '♣', '♥', '♦'];
-  const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-  const deck = [];
-  
-  for (const suit of suits) {
-    for (const rank of ranks) {
-      deck.push({ suit, rank });
-    }
-  }
-  
-  // Fisher-Yates shuffle
-  for (let i = deck.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [deck[i], deck[j]] = [deck[j], deck[i]];
-  }
-  
-  return deck;
-}
-
-// Create new room
-function createRoom(roomCode) {
-  return {
-    roomCode,
-    players: [],  // [{ odId, name, deck, discardPile, drawnCard }, ...]
-    phase: 'waiting',  // waiting, playing, finished
-    currentPlayer: 0,
-    centerPiles: [[], [], [], [], []],  // 5 center piles
-    foundations: [
-      { suit: '♠', cards: [] },
-      { suit: '♣', cards: [] },
-      { suit: '♥', cards: [] },
-      { suit: '♦', cards: [] }
-    ],
-    winner: -1,
-    createdAt: Date.now()
-  };
-}
-
-// Start game when 2 players join
-function startGame(room) {
-  console.log(`🎮 Starting game in room ${room.roomCode}`);
-  
-  const deck = createShuffledDeck();
-  
-  // Deal 26 cards to each player
-  room.players[0].deck = [];
-  room.players[1].deck = [];
-  
-  for (let i = 0; i < 52; i++) {
-    if (i % 2 === 0) {
-      room.players[0].deck.push(deck[i]);
-    } else {
-      room.players[1].deck.push(deck[i]);
-    }
-  }
-  
-  // Deal to center piles (2 cards each)
-  for (let pile = 0; pile < 5; pile++) {
-    room.centerPiles[pile].push(room.players[0].deck.pop());
-    room.centerPiles[pile].push(room.players[1].deck.pop());
-  }
-  
-  room.phase = 'playing';
-  room.currentPlayer = 0;
-  
-  console.log(`✅ Game started! P0: ${room.players[0].deck.length} cards, P1: ${room.players[1].deck.length} cards`);
-  
-  // Broadcast game started to all players
-  broadcastToRoom(room.roomCode, {
-    type: 'game_started',
-    state: getGameState(room)
-  });
-}
-
-// Get game state (with hidden info per player)
-function getGameState(room, forPlayerIndex = -1) {
-  return {
-    roomCode: room.roomCode,
-    phase: room.phase,
-    currentPlayer: room.currentPlayer,
-    winner: room.winner,
-    players: room.players.map((p, idx) => ({
-      index: idx,
-      name: p.name,
-      deckSize: p.deck.length,
-      discardPile: p.discardPile,
-      drawnCard: (forPlayerIndex === idx || forPlayerIndex === -1) ? p.drawnCard : null
-    })),
-    centerPiles: room.centerPiles,
-    foundations: room.foundations
-  };
-}
-
-// Send message to specific client
-function sendToClient(clientId, message) {
-  const client = clients[clientId];
-  if (client && client.ws.readyState === WebSocket.OPEN) {
-    client.ws.send(JSON.stringify(message));
-  }
-}
-
-// Broadcast to all clients in a room
-function broadcastToRoom(roomCode, message, excludeClientId = null) {
-  const room = rooms[roomCode];
-  if (!room) return;
-  
-  const msgStr = JSON.stringify(message);
-  
-  for (const player of room.players) {
-    if (player.odId !== excludeClientId) {
-      const client = clients[player.odId];
-      if (client && client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(msgStr);
-      }
-    }
+// Send JSON message to client
+function send(ws, msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
   }
 }
 
 // Handle incoming messages
-function handleMessage(ws, clientId, data) {
+function handleMessage(ws, data) {
   let msg;
   try {
     msg = JSON.parse(data);
@@ -178,394 +64,173 @@ function handleMessage(ws, clientId, data) {
     return;
   }
   
-  console.log(`📨 [${clientId}] ${msg.type}`);
+  const msgType = msg.type;
+  console.log(`📨 Received: ${msgType}`);
   
-  switch (msg.type) {
-    case 'create_room':
-      handleCreateRoom(ws, clientId, msg);
+  switch (msgType) {
+    case 'create_lobby':
+      handleCreateLobby(ws);
       break;
       
-    case 'join_room':
-      handleJoinRoom(ws, clientId, msg);
+    case 'join_lobby':
+      handleJoinLobby(ws, msg.code);
       break;
       
-    case 'find_match':
-      handleFindMatch(ws, clientId, msg);
+    case 'leave_lobby':
+      handleLeaveLobby(ws);
       break;
       
-    case 'draw_card':
-      handleDrawCard(clientId, msg);
-      break;
-      
-    case 'play_card':
-      handlePlayCard(clientId, msg);
-      break;
-      
-    case 'leave_room':
-      handleLeaveRoom(clientId);
+    case 'game_data':
+      handleGameData(ws, msg.data);
       break;
       
     default:
-      console.log(`Unknown message type: ${msg.type}`);
+      console.log(`Unknown message type: ${msgType}`);
   }
 }
 
-// Handle create room
-function handleCreateRoom(ws, clientId, msg) {
-  const roomCode = generateRoomCode();
-  const room = createRoom(roomCode);
+// Handle create lobby
+function handleCreateLobby(ws) {
+  const code = generateLobbyCode();
   
-  const player = {
-    odId: clientId,
-    name: msg.playerName || 'Host',
-    deck: [],
-    discardPile: [],
-    drawnCard: null
+  lobbies[code] = {
+    code: code,
+    host: ws,
+    guest: null
   };
   
-  room.players.push(player);
-  rooms[roomCode] = room;
+  clientToLobby.set(ws, code);
   
-  clients[clientId].roomCode = roomCode;
-  clients[clientId].playerIndex = 0;
-  clients[clientId].name = player.name;
+  console.log(`🏠 Lobby created: ${code}`);
   
-  console.log(`🏠 Room created: ${roomCode} by ${player.name}`);
-  
-  sendToClient(clientId, {
-    type: 'room_created',
-    roomCode: roomCode,
-    playerIndex: 0,
-    playerName: player.name
+  // Send lobby_created (matches existing NetworkManager expectation)
+  send(ws, {
+    type: 'lobby_created',
+    code: code
   });
 }
 
-// Handle join room
-function handleJoinRoom(ws, clientId, msg) {
-  const roomCode = msg.roomCode.toUpperCase();
-  const room = rooms[roomCode];
+// Handle join lobby
+function handleJoinLobby(ws, code) {
+  // Normalize code
+  code = (code || '').toUpperCase().trim();
   
-  if (!room) {
-    sendToClient(clientId, {
-      type: 'error',
-      message: 'Room not found'
+  const lobby = lobbies[code];
+  
+  if (!lobby) {
+    console.log(`❌ Lobby not found: ${code}`);
+    send(ws, {
+      type: 'join_failed',
+      reason: 'Lobby not found'
     });
     return;
   }
   
-  if (room.players.length >= 2) {
-    sendToClient(clientId, {
-      type: 'error',
-      message: 'Room is full'
+  if (lobby.guest) {
+    console.log(`❌ Lobby full: ${code}`);
+    send(ws, {
+      type: 'join_failed',
+      reason: 'Lobby is full'
     });
     return;
   }
   
-  if (room.phase !== 'waiting') {
-    sendToClient(clientId, {
-      type: 'error',
-      message: 'Game already in progress'
-    });
-    return;
-  }
+  // Join the lobby
+  lobby.guest = ws;
+  clientToLobby.set(ws, code);
   
-  const player = {
-    odId: clientId,
-    name: msg.playerName || 'Guest',
-    deck: [],
-    discardPile: [],
-    drawnCard: null
-  };
+  console.log(`👤 Player joined lobby: ${code}`);
   
-  room.players.push(player);
-  
-  clients[clientId].roomCode = roomCode;
-  clients[clientId].playerIndex = 1;
-  clients[clientId].name = player.name;
-  
-  console.log(`👤 ${player.name} joined room ${roomCode}`);
-  
-  // Notify joiner
-  sendToClient(clientId, {
-    type: 'room_joined',
-    roomCode: roomCode,
-    playerIndex: 1,
-    playerName: player.name,
-    hostName: room.players[0].name
+  // Send lobby_joined to guest
+  send(ws, {
+    type: 'lobby_joined',
+    code: code
   });
   
-  // Notify host
-  sendToClient(room.players[0].odId, {
-    type: 'player_joined',
-    playerIndex: 1,
-    playerName: player.name
-  });
+  // Notify both that peer connected
+  send(lobby.host, { type: 'peer_connected' });
+  send(lobby.guest, { type: 'peer_connected' });
   
-  // Start game with 2 players
-  if (room.players.length === 2) {
-    setTimeout(() => startGame(room), 500);
-  }
+  console.log(`✅ Both players connected in lobby: ${code}`);
 }
 
-// Handle find match (random matchmaking)
-function handleFindMatch(ws, clientId, msg) {
-  // Find a waiting room or create one
-  let foundRoom = null;
+// Handle game data relay
+function handleGameData(ws, data) {
+  const code = clientToLobby.get(ws);
+  if (!code) return;
   
-  for (const code in rooms) {
-    const room = rooms[code];
-    if (room.phase === 'waiting' && room.players.length === 1) {
-      foundRoom = room;
-      break;
-    }
-  }
+  const lobby = lobbies[code];
+  if (!lobby) return;
   
-  if (foundRoom) {
-    // Join existing room
-    handleJoinRoom(ws, clientId, { 
-      roomCode: foundRoom.roomCode, 
-      playerName: msg.playerName 
-    });
-  } else {
-    // Create new room and wait
-    handleCreateRoom(ws, clientId, msg);
-    sendToClient(clientId, {
-      type: 'matchmaking_waiting',
-      message: 'Waiting for opponent...'
+  // Determine who to send to (the other player)
+  const recipient = (ws === lobby.host) ? lobby.guest : lobby.host;
+  
+  if (recipient) {
+    console.log(`📤 Relaying game_data in lobby ${code}`);
+    send(recipient, {
+      type: 'game_data',
+      data: data
     });
   }
 }
 
-// Handle draw card
-function handleDrawCard(clientId, msg) {
-  const client = clients[clientId];
-  if (!client || !client.roomCode) return;
+// Handle leave lobby
+function handleLeaveLobby(ws) {
+  const code = clientToLobby.get(ws);
+  if (!code) return;
   
-  const room = rooms[client.roomCode];
-  if (!room || room.phase !== 'playing') return;
+  const lobby = lobbies[code];
+  if (!lobby) return;
   
-  const playerIndex = client.playerIndex;
-  if (room.currentPlayer !== playerIndex) {
-    sendToClient(clientId, { type: 'error', message: 'Not your turn' });
-    return;
-  }
+  console.log(`👋 Player leaving lobby: ${code}`);
   
-  const player = room.players[playerIndex];
-  if (player.drawnCard) {
-    sendToClient(clientId, { type: 'error', message: 'Already drew a card' });
-    return;
-  }
-  
-  if (player.deck.length === 0) {
-    sendToClient(clientId, { type: 'error', message: 'Deck is empty' });
-    return;
-  }
-  
-  player.drawnCard = player.deck.pop();
-  
-  console.log(`🃏 Player ${playerIndex} drew ${player.drawnCard.rank}${player.drawnCard.suit}`);
-  
-  // Send to drawing player (show the card)
-  sendToClient(clientId, {
-    type: 'card_drawn',
-    card: player.drawnCard,
-    deckSize: player.deck.length
-  });
-  
-  // Broadcast to opponent (hide the card)
-  const opponentId = room.players[1 - playerIndex].odId;
-  sendToClient(opponentId, {
-    type: 'opponent_drew',
-    playerIndex: playerIndex,
-    deckSize: player.deck.length
-  });
-}
-
-// Handle play card
-function handlePlayCard(clientId, msg) {
-  const client = clients[clientId];
-  if (!client || !client.roomCode) return;
-  
-  const room = rooms[client.roomCode];
-  if (!room || room.phase !== 'playing') return;
-  
-  const playerIndex = client.playerIndex;
-  const player = room.players[playerIndex];
-  
-  // Validate and process the move
-  const { fromType, toType, toIndex, card } = msg;
-  
-  let playedCard = null;
-  
-  // Get the card being played
-  if (fromType === 'drawn') {
-    if (!player.drawnCard) {
-      sendToClient(clientId, { type: 'error', message: 'No drawn card' });
-      return;
-    }
-    playedCard = player.drawnCard;
-    player.drawnCard = null;
-  } else if (fromType === 'center') {
-    const pile = room.centerPiles[msg.fromIndex];
-    if (!pile || pile.length === 0) {
-      sendToClient(clientId, { type: 'error', message: 'Empty center pile' });
-      return;
-    }
-    playedCard = pile.pop();
-  }
-  
-  if (!playedCard) {
-    sendToClient(clientId, { type: 'error', message: 'No card to play' });
-    return;
-  }
-  
-  // Place the card
-  let success = false;
-  
-  if (toType === 'foundation') {
-    const foundation = room.foundations[toIndex];
-    // Validate foundation play (must be same suit, sequential)
-    if (foundation.suit === playedCard.suit) {
-      const expectedRank = foundation.cards.length === 0 ? 'A' : 
-        getNextRank(foundation.cards[foundation.cards.length - 1].rank);
-      if (playedCard.rank === expectedRank) {
-        foundation.cards.push(playedCard);
-        success = true;
-      }
-    }
-  } else if (toType === 'center') {
-    room.centerPiles[toIndex].push(playedCard);
-    success = true;
-  } else if (toType === 'discard') {
-    player.discardPile.push(playedCard);
-    success = true;
-    
-    // End turn after discarding
-    room.currentPlayer = 1 - playerIndex;
-  }
-  
-  if (!success) {
-    // Return card
-    if (fromType === 'drawn') {
-      player.drawnCard = playedCard;
-    } else {
-      room.centerPiles[msg.fromIndex].push(playedCard);
-    }
-    sendToClient(clientId, { type: 'error', message: 'Invalid move' });
-    return;
-  }
-  
-  console.log(`🎴 Player ${playerIndex} played ${playedCard.rank}${playedCard.suit} to ${toType}`);
-  
-  // Broadcast updated state
-  broadcastToRoom(room.roomCode, {
-    type: 'state_update',
-    state: getGameState(room),
-    lastMove: {
-      playerIndex,
-      card: playedCard,
-      fromType,
-      toType,
-      toIndex
-    }
-  });
-  
-  // Check win condition
-  checkWinCondition(room);
-}
-
-function getNextRank(rank) {
-  const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-  const idx = ranks.indexOf(rank);
-  return idx < ranks.length - 1 ? ranks[idx + 1] : null;
-}
-
-function checkWinCondition(room) {
-  // Check if all foundations are complete
-  const allComplete = room.foundations.every(f => f.cards.length === 13);
-  
-  if (allComplete) {
-    room.phase = 'finished';
-    room.winner = room.currentPlayer;
-    
-    broadcastToRoom(room.roomCode, {
-      type: 'game_over',
-      winner: room.winner,
-      reason: 'All foundations complete'
-    });
-  }
-}
-
-// Handle player leaving
-function handleLeaveRoom(clientId) {
-  const client = clients[clientId];
-  if (!client || !client.roomCode) return;
-  
-  const room = rooms[client.roomCode];
-  if (!room) return;
-  
-  const playerIndex = client.playerIndex;
-  console.log(`👋 Player ${playerIndex} left room ${room.roomCode}`);
-  
-  // Notify other player
-  const otherPlayerIndex = 1 - playerIndex;
-  if (room.players[otherPlayerIndex]) {
-    const otherId = room.players[otherPlayerIndex].odId;
-    sendToClient(otherId, {
-      type: 'opponent_left',
-      message: 'Opponent disconnected'
-    });
-    
-    // They win by default if game was in progress
-    if (room.phase === 'playing') {
-      room.phase = 'finished';
-      room.winner = otherPlayerIndex;
-      sendToClient(otherId, {
-        type: 'game_over',
-        winner: otherPlayerIndex,
-        reason: 'Opponent disconnected'
-      });
-    }
+  // Notify the other player
+  const other = (ws === lobby.host) ? lobby.guest : lobby.host;
+  if (other) {
+    send(other, { type: 'peer_disconnected' });
   }
   
   // Clean up
-  delete rooms[client.roomCode];
-  client.roomCode = null;
-  client.playerIndex = null;
+  clientToLobby.delete(ws);
+  delete lobbies[code];
+}
+
+// Handle disconnect
+function handleDisconnect(ws) {
+  const code = clientToLobby.get(ws);
+  if (!code) return;
+  
+  const lobby = lobbies[code];
+  if (!lobby) return;
+  
+  console.log(`❌ Player disconnected from lobby: ${code}`);
+  
+  // Notify the other player
+  const other = (ws === lobby.host) ? lobby.guest : lobby.host;
+  if (other) {
+    send(other, { type: 'peer_disconnected' });
+  }
+  
+  // Clean up
+  clientToLobby.delete(ws);
+  delete lobbies[code];
 }
 
 // WebSocket connection handler
 wss.on('connection', (ws) => {
-  const clientId = generateClientId();
-  
-  clients[clientId] = {
-    ws,
-    odId: clientId,
-    roomCode: null,
-    playerIndex: null,
-    name: null
-  };
-  
-  console.log(`🔗 Client connected: ${clientId}`);
-  
-  // Send welcome message with client ID
-  ws.send(JSON.stringify({
-    type: 'connected',
-    clientId: clientId
-  }));
+  console.log(`🔗 Client connected`);
   
   ws.on('message', (data) => {
-    handleMessage(ws, clientId, data.toString());
+    handleMessage(ws, data.toString());
   });
   
   ws.on('close', () => {
-    console.log(`❌ Client disconnected: ${clientId}`);
-    handleLeaveRoom(clientId);
-    delete clients[clientId];
+    console.log(`❌ Client disconnected`);
+    handleDisconnect(ws);
   });
   
   ws.on('error', (err) => {
-    console.error(`WebSocket error for ${clientId}:`, err);
+    console.error(`WebSocket error:`, err.message);
   });
 });
 
@@ -582,15 +247,11 @@ server.listen(PORT, () => {
   console.log('');
 });
 
-// Cleanup old rooms every 5 minutes
+// Cleanup old lobbies every 10 minutes
 setInterval(() => {
-  const now = Date.now();
-  const maxAge = 30 * 60 * 1000; // 30 minutes
-  
-  for (const code in rooms) {
-    if (now - rooms[code].createdAt > maxAge) {
-      console.log(`🧹 Cleaning up old room: ${code}`);
-      delete rooms[code];
-    }
+  // For now just log active lobbies
+  const count = Object.keys(lobbies).length;
+  if (count > 0) {
+    console.log(`📊 Active lobbies: ${count}`);
   }
-}, 5 * 60 * 1000);
+}, 10 * 60 * 1000);

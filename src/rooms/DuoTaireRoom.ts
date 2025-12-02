@@ -135,85 +135,156 @@ export class DuoTaireRoom extends Room<DuoTaireState> {
   private startGame(): void {
     console.log("🎮 Starting game!");
     
-    // Create and shuffle deck
-    const deck = this.createShuffledDeck();
-    
-    // Deal cards to players (26 each)
-    const player0 = this.state.getPlayerByIndex(0);
-    const player1 = this.state.getPlayerByIndex(1);
-    
-    if (!player0 || !player1) {
-      console.error("❌ Players not found!");
-      return;
-    }
-
-    // Deal 26 cards to each player
-    for (let i = 0; i < 52; i++) {
-      const card = deck[i];
-      if (i % 2 === 0) {
-        player0.deck.push(card);
-      } else {
-        player1.deck.push(card);
+    try {
+      // Create and shuffle deck
+      const deck = this.createShuffledDeck();
+      
+      // Deal cards to players (26 each)
+      const player0 = this.state.getPlayerByIndex(0);
+      const player1 = this.state.getPlayerByIndex(1);
+      
+      if (!player0 || !player1) {
+        console.error("❌ Players not found!");
+        return;
       }
+
+      // Deal 26 cards to each player
+      for (let i = 0; i < 52; i++) {
+        const card = deck[i];
+        if (i % 2 === 0) {
+          player0.deck.push(card);
+        } else {
+          player1.deck.push(card);
+        }
+      }
+
+      // Deal initial cards to center piles (one from each player to each pile)
+      for (let pile = 0; pile < 5; pile++) {
+        const card0 = player0.deck.pop();
+        const card1 = player1.deck.pop();
+        if (card0) this.state.centerPiles[pile].cards.push(card0);
+        if (card1) this.state.centerPiles[pile].cards.push(card1);
+      }
+
+      // Set game state
+      this.state.phase = "playing";
+      this.state.currentPlayer = 0; // Host starts
+      this.state.turnStartTime = Date.now();
+      this.state.incrementVersion();
+
+      console.log(`✅ Game started! Player 0 deck: ${player0.deck.length}, Player 1 deck: ${player1.deck.length}`);
+      console.log(`📦 Center piles: ${this.state.centerPiles.map(p => p.cards.length).join(', ')}`);
+      
+      // Broadcast game_started with full state (JSON format for Godot client)
+      const gameState = this.getFullStateJSON();
+      console.log("📤 Broadcasting game_started...");
+      this.broadcast("game_started", gameState);
+      console.log("✅ game_started broadcast sent");
+      
+    } catch (error) {
+      console.error("❌ Error in startGame:", error);
     }
-
-    // Deal initial cards to center piles (one from each player to each pile)
-    for (let pile = 0; pile < 5; pile++) {
-      const card0 = player0.deck.pop();
-      const card1 = player1.deck.pop();
-      if (card0) this.state.centerPiles[pile].cards.push(card0);
-      if (card1) this.state.centerPiles[pile].cards.push(card1);
-    }
-
-    // Set game state
-    this.state.phase = "playing";
-    this.state.currentPlayer = 0; // Host starts
-    this.state.turnStartTime = Date.now();
-    this.state.incrementVersion();
-
-    console.log(`✅ Game started! Player 0 deck: ${player0.deck.length}, Player 1 deck: ${player1.deck.length}`);
-    console.log(`📦 Center piles: ${this.state.centerPiles.map(p => p.cards.length).join(', ')}`);
-    
-    // Broadcast game_started with full state (JSON format for Godot client)
-    this.broadcast("game_started", this.getFullStateJSON());
   }
   
   // Helper to get full game state as JSON (for Godot client)
   private getFullStateJSON(): any {
-    const player0 = this.state.getPlayerByIndex(0);
-    const player1 = this.state.getPlayerByIndex(1);
-    
-    return {
-      phase: this.state.phase,
-      currentPlayer: this.state.currentPlayer,
-      roomCode: this.state.roomCode,
-      version: this.state.version,
-      players: [
-        {
-          index: 0,
-          sessionId: player0?.sessionId || "",
-          name: player0?.name || "Player 1",
-          deckSize: player0?.deck.length || 0,
-          discardPile: player0?.discardPile.map(c => ({ suit: c.suit, rank: c.rank })) || [],
-          drawnCard: player0?.drawnCard ? { suit: player0.drawnCard.suit, rank: player0.drawnCard.rank } : null
-        },
-        {
-          index: 1,
-          sessionId: player1?.sessionId || "",
-          name: player1?.name || "Player 2",
-          deckSize: player1?.deck.length || 0,
-          discardPile: player1?.discardPile.map(c => ({ suit: c.suit, rank: c.rank })) || [],
-          drawnCard: player1?.drawnCard ? { suit: player1.drawnCard.suit, rank: player1.drawnCard.rank } : null
+    console.log("📊 getFullStateJSON called");
+    try {
+      const player0 = this.state.getPlayerByIndex(0);
+      const player1 = this.state.getPlayerByIndex(1);
+      console.log("  Players found: p0=%s, p1=%s", !!player0, !!player1);
+      
+      const serializeCard = (c: CardSchema | undefined | null) => {
+        if (!c) return null;
+        return { suit: c.suit, rank: c.rank };
+      };
+      
+      const serializeCardArray = (arr: any) => {
+        if (!arr) return [];
+        const result: any[] = [];
+        try {
+          // Handle ArraySchema or regular array
+          if (typeof arr.forEach === 'function') {
+            arr.forEach((c: CardSchema) => {
+              if (c) result.push(serializeCard(c));
+            });
+          } else if (Array.isArray(arr)) {
+            arr.forEach((c: CardSchema) => {
+              if (c) result.push(serializeCard(c));
+            });
+          }
+        } catch (e) {
+          console.error("Error serializing card array:", e);
         }
-      ],
-      centerPiles: this.state.centerPiles.map(pile => 
-        pile.cards.map(c => ({ suit: c.suit, rank: c.rank }))
-      ),
-      foundations: this.state.foundations.map(f => ({
-        suit: f.suit,
-        cards: f.cards.map(c => ({ suit: c.suit, rank: c.rank }))
-      }))
-    };
+        return result;
+      };
+      
+      // Safely get center piles
+      console.log("  centerPiles exists: %s, length: %s", !!this.state.centerPiles, this.state.centerPiles?.length);
+      const centerPilesData: any[] = [];
+      if (this.state.centerPiles) {
+        for (let i = 0; i < 5; i++) {
+          const pile = this.state.centerPiles[i];
+          console.log("    Pile %d: exists=%s, cards=%s", i, !!pile, pile?.cards?.length);
+          if (pile && pile.cards) {
+            centerPilesData.push(serializeCardArray(pile.cards));
+          } else {
+            centerPilesData.push([]);
+          }
+        }
+      }
+      
+      // Safely get foundations
+      console.log("  foundations exists: %s, length: %s", !!this.state.foundations, this.state.foundations?.length);
+      const foundationsData: any[] = [];
+      if (this.state.foundations) {
+        for (let i = 0; i < 4; i++) {
+          const f = this.state.foundations[i];
+          console.log("    Foundation %d: exists=%s, suit=%s", i, !!f, f?.suit);
+          if (f) {
+            foundationsData.push({
+              suit: f.suit || '',
+              cards: serializeCardArray(f.cards)
+            });
+          } else {
+            foundationsData.push({ suit: '', cards: [] });
+          }
+        }
+      }
+      
+      console.log("  Building result object...");
+      const result = {
+        phase: this.state.phase,
+        currentPlayer: this.state.currentPlayer,
+        roomCode: this.state.roomCode,
+        version: this.state.stateVersion,
+        players: [
+          {
+            index: 0,
+            sessionId: player0?.sessionId || "",
+            name: player0?.name || "Player 1",
+            deckSize: player0?.deck?.length || 0,
+            discardPile: serializeCardArray(player0?.discardPile),
+            drawnCard: serializeCard(player0?.drawnCard)
+          },
+          {
+            index: 1,
+            sessionId: player1?.sessionId || "",
+            name: player1?.name || "Player 2",
+            deckSize: player1?.deck?.length || 0,
+            discardPile: serializeCardArray(player1?.discardPile),
+            drawnCard: serializeCard(player1?.drawnCard)
+          }
+        ],
+        centerPiles: centerPilesData,
+        foundations: foundationsData
+      };
+      console.log("✅ getFullStateJSON completed successfully");
+      return result;
+    } catch (error) {
+      console.error("❌ Error in getFullStateJSON:", error);
+      return { phase: "error", error: String(error) };
+    }
   }
 
   private createShuffledDeck(): CardSchema[] {

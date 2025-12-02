@@ -92,6 +92,14 @@ export class DuoTaireRoom extends Room<DuoTaireState> {
     this.state.players.set(client.sessionId, player);
     
     console.log(`✅ Player ${playerIndex} (${player.name}) joined. Total: ${this.state.players.size}`);
+    
+    // Broadcast player joined message (JSON format for Godot client)
+    this.broadcast("player_joined", {
+      sessionId: client.sessionId,
+      playerIndex: playerIndex,
+      playerName: player.name,
+      totalPlayers: this.state.players.size
+    });
 
     // Start game when both players join
     if (this.state.players.size === 2) {
@@ -165,6 +173,47 @@ export class DuoTaireRoom extends Room<DuoTaireState> {
 
     console.log(`✅ Game started! Player 0 deck: ${player0.deck.length}, Player 1 deck: ${player1.deck.length}`);
     console.log(`📦 Center piles: ${this.state.centerPiles.map(p => p.cards.length).join(', ')}`);
+    
+    // Broadcast game_started with full state (JSON format for Godot client)
+    this.broadcast("game_started", this.getFullStateJSON());
+  }
+  
+  // Helper to get full game state as JSON (for Godot client)
+  private getFullStateJSON(): any {
+    const player0 = this.state.getPlayerByIndex(0);
+    const player1 = this.state.getPlayerByIndex(1);
+    
+    return {
+      phase: this.state.phase,
+      currentPlayer: this.state.currentPlayer,
+      roomCode: this.state.roomCode,
+      version: this.state.version,
+      players: [
+        {
+          index: 0,
+          sessionId: player0?.sessionId || "",
+          name: player0?.name || "Player 1",
+          deckSize: player0?.deck.length || 0,
+          discardPile: player0?.discardPile.map(c => ({ suit: c.suit, rank: c.rank })) || [],
+          drawnCard: player0?.drawnCard ? { suit: player0.drawnCard.suit, rank: player0.drawnCard.rank } : null
+        },
+        {
+          index: 1,
+          sessionId: player1?.sessionId || "",
+          name: player1?.name || "Player 2",
+          deckSize: player1?.deck.length || 0,
+          discardPile: player1?.discardPile.map(c => ({ suit: c.suit, rank: c.rank })) || [],
+          drawnCard: player1?.drawnCard ? { suit: player1.drawnCard.suit, rank: player1.drawnCard.rank } : null
+        }
+      ],
+      centerPiles: this.state.centerPiles.map(pile => 
+        pile.cards.map(c => ({ suit: c.suit, rank: c.rank }))
+      ),
+      foundations: this.state.foundations.map(f => ({
+        suit: f.suit,
+        cards: f.cards.map(c => ({ suit: c.suit, rank: c.rank }))
+      }))
+    };
   }
 
   private createShuffledDeck(): CardSchema[] {
